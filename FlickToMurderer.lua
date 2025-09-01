@@ -1,16 +1,15 @@
 local shared = odh_shared_plugins
 
-local flick_section = shared.AddSection("Flick to Murderer V2")
+local flick_section = shared.AddSection("Flick to Murderer V3")
 
 flick_section:AddLabel("Credits: @thanhtv68_ (Mồn Lèo)")
 
 local flickEnabled = false
 local flickDuration = 0.3
-local cooldownSeconds = 2
+local autoShotEnabled = false
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local UIS = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local murdererButton
 
@@ -51,6 +50,20 @@ local function findMurderer()
     end
 end
 
+local function shootGun()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local gun = char:FindFirstChild("Gun") or LocalPlayer.Backpack:FindFirstChild("Gun")
+    if not gun then return end
+    if gun.Parent == LocalPlayer.Backpack then
+        LocalPlayer.Character.Humanoid:EquipTool(gun)
+        task.wait(0.1)
+    end
+    local args = {0, Vector3.new(), "AH2"}
+    local rf = gun:WaitForChild("KnifeLocal"):WaitForChild("CreateBeam"):WaitForChild("RemoteFunction")
+    rf:InvokeServer(unpack(args))
+end
+
 local function flickToMurderer()
     if not flickEnabled then return end
     local murderer = findMurderer()
@@ -64,6 +77,9 @@ local function flickToMurderer()
     task.delay(flickDuration, function()
         cam.CFrame = oldCFrame
     end)
+    if autoShotEnabled then
+        shootGun()
+    end
 end
 
 flick_section:AddToggle("Enable Flick", function(state)
@@ -83,6 +99,13 @@ flick_section:AddKeybind("Flick Key", "F", function()
     flickToMurderer()
 end)
 
+flick_section:AddToggle("Auto Shot After Flick", function(state)
+    autoShotEnabled = state
+    if murdererButton then
+        murdererButton.Text = autoShotEnabled and "FLICK + SHOT" or "FLICK"
+    end
+end)
+
 flick_section:AddToggle("Show Mobile Flick Button", function(state)
     if state then
         if murdererButton then murdererButton:Destroy() end
@@ -91,21 +114,19 @@ flick_section:AddToggle("Show Mobile Flick Button", function(state)
         gui.ResetOnSpawn = false
         gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
         local button = Instance.new("TextButton")
-        button.Text = "FLICK"
+        button.Text = autoShotEnabled and "FLICK + SHOT" or "FLICK"
         button.TextColor3 = Color3.fromRGB(255, 255, 255)
         button.BackgroundColor3 = Color3.fromRGB(255, 100, 0)
-        button.Size = UDim2.new(0, 100, 0, 40)
-        button.Position = UDim2.new(0.8, 0, 0.2, 0)
+        button.Size = UDim2.new(0, 120, 0, 40)
+        button.Position = UDim2.new(0.75, 0, 0.2, 0)
         button.Active = true
         button.Parent = gui
         murdererButton = button
 
         local dragging, dragInput, dragStart, startPos
-        local cooling = false
 
         button.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                if cooling then return end
                 dragging = true
                 dragStart = input.Position
                 startPos = Vector2.new(button.Position.X.Offset, button.Position.Y.Offset)
@@ -134,28 +155,8 @@ flick_section:AddToggle("Show Mobile Flick Button", function(state)
             end
         end)
 
-        local function startCooldown()
-            if cooling then return end
-            cooling = true
-            button.Active = false
-            local startTime = tick()
-            local finishTime = startTime + cooldownSeconds
-            while true do
-                local now = tick()
-                local remaining = finishTime - now
-                if remaining <= 0 then break end
-                button.Text = string.format("%.1f", math.max(0, remaining))
-                task.wait(0.1)
-            end
-            button.Text = "FLICK"
-            button.Active = true
-            cooling = false
-        end
-
         button.MouseButton1Click:Connect(function()
-            if cooling then return end
             flickToMurderer()
-            task.spawn(startCooldown)
         end)
     else
         if murdererButton then
