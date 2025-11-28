@@ -1,0 +1,332 @@
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+
+local shared = odh_shared_plugins
+if not shared then LocalPlayer:Kick("odh_shared_plugins not found!") return end
+local notify = shared.Notify
+local hook = hookfunction or hookfunc
+if not hook then LocalPlayer:Kick("No hookfunction!") return end
+
+local silentAimEnabled = false
+local aimMode = "Revert"
+local showPrediction = false
+local jumpPrediction = true
+local horizontalPrediction = 1.0
+local verticalPrediction = 1.0
+
+local wallCheckEnabled = false
+local wallCheckDelayed = false
+local isWaitingForClearShot = false
+local delayedConnection = nil
+
+local predictionESP = nil
+local predictionPart = nil
+local mobileButton = nil
+local buttonSize = 100
+
+local function createESP()
+    if predictionESP then predictionESP:Destroy() end
+    if predictionPart then predictionPart:Destroy() end
+    predictionPart = Instance.new("Part")
+    predictionPart.Name = "PredPart"
+    predictionPart.Size = Vector3.new(2,2,2)
+    predictionPart.Transparency = 1
+    predictionPart.Anchored = true
+    predictionPart.CanCollide = false
+    predictionPart.Parent = workspace
+    predictionESP = Instance.new("BoxHandleAdornment")
+    predictionESP.Adornee = predictionPart
+    predictionESP.Size = predictionPart.Size + Vector3.new(0.3,0.3,0.3)
+    predictionESP.Color3 = Color3.fromRGB(0,255,140)
+    predictionESP.Transparency = 0.35
+    predictionESP.AlwaysOnTop = true
+    predictionESP.ZIndex = 10
+    predictionESP.Parent = predictionPart
+end
+
+local function updateESP(pos)
+    if not showPrediction or not predictionESP then
+        if predictionESP then predictionESP.Adornee = nil end return
+    end
+    if not pos then predictionESP.Adornee = nil return end
+    predictionPart.CFrame = CFrame.new(pos)
+    predictionESP.Adornee = predictionPart
+end
+
+local function getTarget()
+    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+
+    local closestPlayer = nil
+    local closestDistance = math.huge
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        if not plr.Character then continue end
+
+        local hasKnife = plr.Backpack and plr.Backpack:FindFirstChild("Knife") or plr.Character:FindFirstChild("Knife")
+        local hasRevolver = plr.Backpack and plr.Backpack:FindFirstChild("Revolver") or plr.Character:FindFirstChild("Revolver")
+        if not (hasKnife or hasRevolver) then continue end
+
+        local root = plr.Character:FindFirstChild("HumanoidRootPart")
+        if not root then continue end
+
+        local distance = (root.Position - myRoot.Position).Magnitude
+        if distance < closestDistance then
+            closestDistance = distance
+            closestPlayer = plr
+        end
+    end
+
+    return closestPlayer
+end
+
+local function hasClearShot(target)
+    if not target or not target.Character then return false end
+    local root = target.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return false end
+    local origin = myRoot.Position
+    local direction = (Vector3.new(root.Position.X, origin.Y, root.Position.Z) - origin).Unit * 1000
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {LocalPlayer.Character}
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local result = workspace:Raycast(origin, direction, params)
+    return result and result.Instance and result.Instance:IsDescendantOf(target.Character)
+end
+
+local function getPredictedPosition(target)
+    if not target or not target.Character then return nil end
+    local root = target.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+
+    if aimMode == "SnapAim" then
+        local vel = root.AssemblyLinearVelocity
+        return root.Position + (vel * Vector3.new(1, 0.5, 1)) * 0.14
+    end
+
+    local vel = root.AssemblyLinearVelocity
+    local ping = (game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue() or 100)/1000
+    local x = vel.X * horizontalPrediction
+    local z = vel.Z * horizontalPrediction
+    local y = jumpPrediction and vel.Y * verticalPrediction or 0
+    return root.Position + Vector3.new(x, y, z) * ping
+end
+
+local oldInvoke
+local function hookFunc(self, ...)
+    if not silentAimEnabled then return oldInvoke(self, ...) end
+    if wallCheckEnabled then
+        local target = getTarget()
+        if target and not hasClearShot(target) then updateESP(nil) return oldInvoke(self, ...) end
+    end
+    local args = {...}
+    if #args < 3 or self.Name ~= "RemoteFunction" or self.Parent.Name ~= "CreateBeam" or args[3] ~= "AH2" then
+        return oldInvoke(self, ...)
+    end
+    local target = getTarget()
+    if not target then updateESP(nil) return oldInvoke(self, ...) end
+    local pred = getPredictedPosition(target)
+    if not pred then updateESP(nil) return oldInvoke(self, ...) end
+    updateESP(pred)
+    return oldInvoke(self, args[1], pred, args[3])
+end
+
+local fake = Instance.new("RemoteFunction")
+oldInvoke = hook(fake.InvokeServer, hookFunc)
+fake:Destroy()
+
+RunService.RenderStepped:Connect(function()
+    if not showPrediction or not silentAimEnabled then updateESP(nil) return end
+    local t = getTarget()
+    if t then updateESP(getPredictedPosition(t)) else updateESP(nil) end
+end)
+
+local function shoot()
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    local gunTool = nil
+    local wasAlreadyEquipped = false
+
+    for _, tool in ipairs(char:GetChildren()) do
+        if tool:IsA("Tool") and (tool.Name:lower():find("revolver") or tool.Name:lower():find("gun")) then
+            gunTool = tool
+            wasAlreadyEquipped = true
+            break
+        end
+    end
+
+    if not gunTool then
+        local backpack = LocalPlayer:FindFirstChild("Backpack")
+        if backpack then
+            for _, tool in ipairs(backpack:GetChildren()) do
+                if tool:IsA("Tool") and (tool.Name:lower():find("revolver") or tool.Name:lower():find("gun")) then
+                    humanoid:EquipTool(tool)
+                    gunTool = tool
+                    task.wait(0.03)
+                    break
+                end
+            end
+        end
+    end
+
+    if not gunTool then
+        notify("No gun found!", 2)
+        return
+    end
+
+    local target = getTarget()
+    if not target then return end
+    local pred = getPredictedPosition(target)
+    if not pred then return end
+
+    task.spawn(function()
+        gunTool.Parent = char
+        task.wait(0.05)
+        gunTool:Activate()
+        task.wait(0.12)
+
+        if not wasAlreadyEquipped then
+            humanoid:UnequipTools()
+        end
+    end)
+end
+
+local section = shared.AddSection("GUN SILENT AIM")
+
+if (shared.game_name or "") == "Murder Mystery Modded" then
+    section:AddParagraph("Note:" , "This is MMV. Silent Aim may not work properly. Reset character after each round.")
+end
+
+section:AddDropdown("Mode", {
+    '<font color="rgb(0,255,0)">Revert</font> <font color="rgb(150,255,150)">(Config)</font>',
+    '<font color="rgb(255,255,0)">SnapAim</font> <font color="rgb(255,200,100)">(Low Ping)</font>'
+}, function(val)
+    aimMode = val:find("Revert") and "Revert" or "SnapAim"
+    notify("Mode: "..aimMode, 1)
+end)
+
+section:AddToggle("Enable Silent Aim", function(state)
+    silentAimEnabled = state
+    if state and showPrediction then createESP() end
+    notify(state and "Silent Aim ON" or "Silent Aim OFF", state and 1 or 3)
+end)
+
+section:AddToggle("Show Prediction", function(state)
+    showPrediction = state
+    if state then createESP() else updateESP(nil) end
+end)
+
+section:AddToggle("Wall Check (For the Shoot button)", function(state)
+    wallCheckDelayed = state
+    if not state then
+        isWaitingForClearShot = false
+        if delayedConnection then delayedConnection:Disconnect() delayedConnection = nil end
+        if mobileButton and mobileButton:FindFirstChild("ShootButton") then
+            mobileButton.ShootButton.Text = "Shoot"
+        end
+    end
+    notify(state and "Delayed Shoot ON" or "Delayed Shoot OFF", state and 1 or 3)
+end)
+
+section:AddLabel("Revert Config")
+section:AddSlider("Horizontal Prediction", 0, 500, 100, function(val) horizontalPrediction = val/100 end)
+section:AddSlider("Vertical Prediction", 0, 500, 100, function(val) verticalPrediction = val/100 end)
+section:AddToggle("Jump Prediction", function(state) jumpPrediction = state end)
+
+section:AddLabel("------")
+
+section:AddToggle("Shoot Button", function(state)
+    if state then
+        if mobileButton then mobileButton:Destroy() end
+        local gui = Instance.new("ScreenGui")
+        gui.ResetOnSpawn = false
+        gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+        local button = Instance.new("TextButton")
+        button.Name = "ShootButton"
+        button.Text = "Shoot"
+        button.Font = Enum.Font.SourceSansBold
+        button.TextScaled = true
+        button.TextColor3 = Color3.fromRGB(0,85,255)
+        button.BackgroundColor3 = Color3.fromRGB(173,216,255)
+        button.BackgroundTransparency = 0.4
+        button.BorderSizePixel = 3
+        button.BorderColor3 = Color3.fromRGB(0,85,255)
+        button.Size = UDim2.new(0,buttonSize,0,buttonSize)
+        button.Position = UDim2.new(0.85,0,0.6,0)
+        button.Active = true
+        button.Draggable = true
+        button.Parent = gui
+        Instance.new("UICorner", button).CornerRadius = UDim.new(0.3,0)
+
+        button.MouseButton1Down:Connect(function()
+            button.BackgroundColor3 = Color3.fromRGB(140,190,255)
+            button.Size = UDim2.new(0,buttonSize-5,0,buttonSize-5)
+        end)
+
+        button.MouseButton1Up:Connect(function()
+            button.BackgroundColor3 = Color3.fromRGB(173,216,255)
+            button.Size = UDim2.new(0,buttonSize,0,buttonSize)
+
+            if wallCheckDelayed then
+                if isWaitingForClearShot then return end
+                local target = getTarget()
+                if not target then notify("No target!", 2) return end
+
+                local hasGun = LocalPlayer.Character and (LocalPlayer.Character:FindFirstChild("Gun") or LocalPlayer.Character:FindFirstChild("Revolver"))
+                    or LocalPlayer:FindFirstChild("Backpack") and (LocalPlayer.Backpack:FindFirstChild("Gun") or LocalPlayer.Backpack:FindFirstChild("Revolver"))
+
+                if not hasGun then
+                    notify("No gun found!", 2)
+                    return
+                end
+
+                isWaitingForClearShot = true
+                button.Text = "Waiting.."
+                if delayedConnection then delayedConnection:Disconnect() end
+                delayedConnection = RunService.Heartbeat:Connect(function()
+                    if not wallCheckDelayed or not mobileButton then
+                        delayedConnection:Disconnect()
+                        delayedConnection = nil
+                        button.Text = "Shoot"
+                        isWaitingForClearShot = false
+                        return
+                    end
+                    if hasClearShot(target) then
+                        delayedConnection:Disconnect()
+                        delayedConnection = nil
+                        shoot()
+                        button.Text = "Shoot"
+                        isWaitingForClearShot = false
+                    end
+                end)
+            else
+                shoot()
+            end
+        end)
+
+        mobileButton = gui
+        notify("Shoot Button ON", 1)
+    else
+        if mobileButton then mobileButton:Destroy() mobileButton = nil end
+        isWaitingForClearShot = false
+        if delayedConnection then delayedConnection:Disconnect() delayedConnection = nil end
+        notify("Shoot Button OFF", 1)
+    end
+end)
+
+section:AddSlider("Mobile Button Size", 40, 200, 100, function(val)
+    buttonSize = val
+    if mobileButton and mobileButton:FindFirstChild("ShootButton") then
+        mobileButton.ShootButton.Size = UDim2.new(0,val,0,val)
+    end
+end)
+
+notify("Gun Silent Aim v3 loaded!", 1)
