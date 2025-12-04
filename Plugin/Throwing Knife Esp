@@ -1,1 +1,43 @@
+local shared = odh_shared_plugins
+local my_own_section = shared.AddSection("ESP THROWING KNIFE")
 
+my_own_section:AddLabel("Credits: @Mồm Lèo")
+
+my_own_section:AddToggle("Check ThrowingKnife", function(enabled)
+    local connections = {}
+
+    local function highlightKnife(knife)
+        local highlight = Instance.new("Highlight")
+        highlight.Adornee = knife
+        highlight.Parent = knife
+    end
+
+    if enabled then
+        shared.Notify("ESP Throwing Knife enabled", 1)
+
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj.Name == "ThrowingKnife" then
+                highlightKnife(obj)
+            end
+        end
+
+        table.insert(connections, workspace.DescendantAdded:Connect(function(obj)
+            if obj.Name == "ThrowingKnife" then
+                highlightKnife(obj)
+            end
+        end))
+    else
+        shared.Notify("ESP Throwing Knife disabled", 2)
+
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj.Name == "ThrowingKnife" and obj:FindFirstChildWhichIsA("Highlight") then
+                obj:FindFirstChildWhichIsA("Highlight"):Destroy()
+            end
+        end
+
+        for _, conn in pairs(connections) do
+            conn:Disconnect()
+        end
+        connections = {}
+    end
+end)
